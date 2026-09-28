@@ -1,0 +1,42 @@
+# OTel Collector config for log ingestion
+receivers:
+  filelog:
+    include:
+      - /var/log/containers/*.log
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+      - type: severity_parser
+        parse_from: attributes.level
+        mapping:
+          error: error
+          warn: warn
+          info: info
+          debug: debug
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  resource:
+    attributes:
+      - key: service.name
+        from_attribute: service
+        action: upsert
+
+exporters:
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    labels:
+      attributes:
+        service: ""
+        level: ""
+
+service:
+  pipelines:
+    logs:
+      receivers: [filelog]
+      processors: [batch, resource]
+      exporters: [loki]
