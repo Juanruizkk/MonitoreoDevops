@@ -18,6 +18,8 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - grafana-data:/var/lib/grafana
     restart: unless-stopped
 
   otel-collector:
@@ -30,3 +32,33 @@ services:
     volumes:
       - ./config/otel-collector.yml:/etc/otelcol-contrib/config.yaml
     restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    restart: unless-stopped
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox-exporter
+    ports:
+      - "9115:9115"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    cap_add:
+      - NET_RAW
+    volumes:
+      - ./blackbox.yml:/etc/blackbox_exporter/config.yml
+    restart: unless-stopped
+
+volumes:
+  grafana-data:
