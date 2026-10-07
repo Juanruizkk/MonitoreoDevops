@@ -93,15 +93,26 @@ Grafana  (:3001)
 
 ---
 
-## Estructura de archivos
+## Estructura de archivos y Arquitectura Modular
 
 ```
 observability-lab/
-├── docker-compose.yml          # Define y conecta todos los servicios
-└── config/
-    ├── prometheus.yml          # Configuración de Prometheus
-    └── otel-collector.yml      # Configuración del OTEL Collector
+├── docker-compose.yml          # Stack base: Prometheus, Grafana, OTel Collector, Exporters
+├── docker-compose.logging.yml  # Override modular: Loki + Datasource Grafana + Logs volume
+├── docker-compose.tracing.yml  # Override modular: Tempo + Datasource Grafana
+├── config/
+│   ├── prometheus.yml          # Configuración de Prometheus
+│   └── otel-collector.yml      # Configuración del OTEL Collector
+├── loki/                       # Config y provisioning de Loki
+├── tempo/                      # Config y provisioning de Tempo
+└── app/                        # Aplicación demo y logs
 ```
+
+### ¿Por qué los logs y trazas están en compose separados? (Pattern Overrides)
+El proyecto utiliza composición modular (`docker compose -f base.yml -f override.yml up -d`):
+* **No son entornos aislados:** Docker fusiona los archivos agregando Loki o Tempo a la misma red y extendiendo los servicios base (inyectando datasources en Grafana y montajes de logs en el Collector).
+* **Ahorro de recursos:** Puedes correr solo el stack base de métricas sin cargar la memoria con Loki/Tempo cuando no los necesitas.
+* **Mantenibilidad:** Separación clara de responsabilidades sin tener un archivo YAML monolítico.
 
 ---
 
@@ -188,8 +199,19 @@ Hay dos pipelines configurados:
 
 ## Levantar el lab
 
+### Opción 1: Solo métricas (Stack Base)
 ```bash
 docker compose up -d
+```
+
+### Opción 2: Métricas + Logs (Loki)
+```bash
+docker compose -f docker-compose.yml -f docker-compose.logging.yml up -d
+```
+
+### Opción 3: Stack Completo (Métricas + Logs + Trazas)
+```bash
+docker compose -f docker-compose.yml -f docker-compose.logging.yml -f docker-compose.tracing.yml up -d
 ```
 
 Verificar que los servicios están corriendo:
@@ -201,9 +223,9 @@ docker compose ps
 Ver logs de un servicio específico:
 
 ```bash
-docker compose logs otel-collector
-docker compose logs prometheus
-docker compose logs grafana
+docker compose logs -f otel-collector
+docker compose logs -f loki
+docker compose logs -f tempo
 ```
 
 Bajar todo:

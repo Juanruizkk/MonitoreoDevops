@@ -1,0 +1,25 @@
+services:
+  loki:
+    image: grafana/loki:3.0.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--output-document=-", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    volumes:
+      - ./loki/grafana-loki-datasource.yml:/etc/grafana/provisioning/datasources/loki.yml:ro
+
+  otel-collector:
+    volumes:
+      - ./app/logs:/var/log/demo-app:ro
+
+volumes:
+  loki-data:

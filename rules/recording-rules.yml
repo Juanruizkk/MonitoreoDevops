@@ -1,0 +1,50 @@
+groups:
+  - name: http_recording_rules
+    interval: 15s
+    rules:
+      # Request rate by service/endpoint
+      - record: job:app_http_requests:rate5m
+        expr: sum(rate(app_http_requests_total[5m])) by (job)
+
+      - record: endpoint:app_http_requests:rate5m
+        expr: sum(rate(app_http_requests_total[5m])) by (endpoint)
+
+      # Error rate percentage
+      - record: job:app_http_errors:rate5m_ratio
+        expr: |
+          sum(rate(app_http_requests_total{status_code=~"5.."}[5m])) by (job)
+          /
+          sum(rate(app_http_requests_total[5m])) by (job)
+
+      # P99 latency by endpoint
+      - record: endpoint:app_http_request_duration_seconds:p99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(app_http_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          )
+
+      # P50 latency by endpoint
+      - record: endpoint:app_http_request_duration_seconds:p50
+        expr: |
+          histogram_quantile(0.50,
+            sum(rate(app_http_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          )
+
+  - name: sli_recording_rules
+    interval: 15s
+    rules:
+      # Availability SLI (successful requests / total requests)
+      - record: job:app_http_availability:ratio5m
+        expr: |
+          1 - (
+            sum(rate(app_http_requests_total{status_code=~"5.."}[5m])) by (job)
+            /
+            sum(rate(app_http_requests_total[5m])) by (job)
+          )
+
+      # Latency SLI (requests under 500ms / total requests)
+      - record: job:app_http_latency_sli:ratio5m
+        expr: |
+          sum(rate(app_http_request_duration_seconds_bucket{le="0.5"}[5m])) by (job)
+          /
+          sum(rate(app_http_request_duration_seconds_count[5m])) by (job)

@@ -140,3 +140,101 @@ Prometheus:  http_server_request_duration_seconds
 - A los counters se les agrega `_total`
 
 Por eso las métricas auto-instrumentadas de la lección 103 ya tienen nombres con formato Prometheus.
+
+---
+
+## 3. Labels: cardinalidad y buenas prácticas
+
+### Por qué los labels importan más de lo que parecen
+
+Cada combinación única de **nombre de métrica + valores de labels** crea una **time series** separada en Prometheus. Esto se llama **cardinalidad**.
+
+```
+app_http_requests_total{endpoint="/users", status_code="200"}  → 1 serie
+app_http_requests_total{endpoint="/order", status_code="200"}  → 1 serie
+app_http_requests_total{endpoint="/error", status_code="500"}  → 1 serie
+```
+
+Si una métrica tiene labels con muchos valores posibles, la cantidad de series **explota**. Esto consume RAM, CPU y disco en Prometheus — es el **problema operacional #1** con Prometheus.
+
+### Labels buenos (cardinalidad acotada)
+
+| Label | Valores posibles |
+|-------|-----------------|
+| `method` | GET, POST, PUT, DELETE → **4 valores** |
+| `status_code` | 200, 400, 404, 500 → **pocos valores** |
+| `endpoint` | /, /users, /order, /error → **fijo por app** |
+| `product_category` | electronics, books, clothing, food → **fijo por negocio** |
+
+La cantidad de series es predecible y no crece con el tiempo.
+
+### Labels malos (cardinalidad no acotada)
+
+| Label | Problema |
+|-------|---------|
+| `user_id` | 1 millón de usuarios = 1 millón de series |
+| `email` | único por usuario |
+| `request_id` | único por request — infinito |
+| `url` | `/users/123`, `/users/456`... crece sin límite |
+
+Agregar `user_id` a `app_http_requests_total` con 1M de usuarios crea **1 millón de time series de un solo metric**.
+
+### La regla antes de agregar un label
+
+> "¿Cuántos valores únicos puede tener este label?"
+> Si la respuesta es "ilimitados" → **no va como label**.
+
+Los identificadores de alta cardinalidad (user_id, request_id, URL completa) van en **logs y trazas**, no en métricas:
+- **Métricas** → agregaciones y tendencias (pocos valores por dimensión)
+- **Logs** → eventos individuales con todos sus detalles
+- **Trazas** → recorrido completo de un request específico
+
+### Monitorear la cardinalidad
+
+Prometheus expone su propia métrica de salud:
+
+```promql
+prometheus_tsdb_head_series
+```
+
+Regla de oro: **menos de 100.000 series** para una instancia Prometheus standalone. Si crece inesperadamente, significa que alguien agregó un label de alta cardinalidad.
+
+---
+
+## 4. Inventario completo de métricas del lab
+
+Al terminar esta lección, el stack tiene dos capas de métricas conviviendo en Prometheus:
+
+### Auto-instrumentadas (Lección 103 — sin código)
+
+| Métrica | Tipo | Qué mide |
+|---------|------|----------|
+| `http_server_request_duration_seconds` | Histogram | Latencia de requests HTTP |
+| `http_server_active_requests` | Gauge | Requests en curso |
+
+### Custom (Lección 202 — escritas en la app)
+
+| Métrica | Tipo | Qué mide |
+|---------|------|----------|
+| `app_http_requests_total` | Counter | Requests con endpoint y status code |
+| `app_orders_processed_total` | Counter | Evento de negocio: órdenes procesadas |
+| `app_active_connections` | Gauge | Conexiones activas en el pool |
+| `app_http_request_duration_seconds` | Histogram | Latencia medida por la app |
+
+### El pipeline completo
+
+```
+App (auto + custom) → OTel Collector (:4317) → Prometheus (:9090) → Grafana (:3001)
+```
+
+Ambas capas coexisten y se pueden combinar en las mismas queries y dashboards.
+
+### Para qué sirve cada capa
+
+- **Auto-instrumentadas** → visibilidad técnica HTTP gratis, sin tocar código
+- **Custom** → visibilidad de negocio (qué pasó, no solo cómo llegó el request)
+
+### Lo que viene
+
+- **Lección 203**: agregar Node Exporter y Blackbox Exporter al mismo `docker-compose.yml` — métricas de infraestructura (CPU, memoria, disco) y disponibilidad externa
+- **Lección 204**: alerting rules sobre estos nombres de métricas exactos

@@ -6,24 +6,88 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+  filelog:
+    include:
+      - /var/log/demo-app/*.log
+    start_at: beginning
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+      - type: severity_parser
+        parse_from: attributes.level
+        mapping:
+          error: error
+          warn: warn
+          info: info
+          debug: debug
+
 processors:
   batch:
     timeout: 5s
     send_batch_size: 1024
+    send_batch_max_size: 1024
+
+  # Común a las 3 señales: environment + service.name
+  resource:
+    attributes:
+      - key: environment
+        value: "staging"
+        action: upsert
+      - key: service.name
+        value: demo-app
+        action: upsert
+
+  # Solo trazas: limpiar datos sensibles antes de mandarlos a Tempo
+  attributes/scrub:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: db.statement
+        action: hash
+
+  # Solo logs: hints de labels para el exporter de Loki (lección 302)
+  attributes/loki:
+    actions:
+      - key: loki.attribute.labels
+        value: service,level
+        action: insert
+
+  resource/loki:
+    attributes:
+      - key: loki.resource.labels
+        value: service.name
+        action: insert
 
 exporters:
   prometheus:
     endpoint: 0.0.0.0:8889
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
   debug:
-    verbosity: detailed
+    verbosity: basic
 
 service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [resource, batch]
       exporters: [prometheus, debug]
     traces:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [debug]
+      processors: [resource, attributes/scrub, batch]
+      exporters: [otlp/tempo, debug]
+    logs:
+      receivers: [filelog]
+      processors: [resource, resource/loki, attributes/loki, batch]
+      exporters: [loki, debug]

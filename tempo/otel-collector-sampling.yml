@@ -1,0 +1,64 @@
+# Lección 303 — Step 9: tail sampling (config de referencia, NO está montada en el stack)
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+  tail_sampling:
+    decision_wait: 30s
+    num_traces: 100000
+    expected_new_traces_per_sec: 1000
+    policies:
+      # Policy 1: siempre quedarse con trazas con error
+      - name: errors-policy
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+
+      # Policy 2: siempre quedarse con trazas lentas (> 2s)
+      - name: latency-policy
+        type: latency
+        latency:
+          threshold_ms: 2000
+
+      # Policy 3: siempre quedarse con endpoints críticos
+      - name: critical-endpoints
+        type: string_attribute
+        string_attribute:
+          key: http.route
+          values: ["/api/checkout", "/api/payment", "/api/auth/login"]
+
+      # Policy 4: 5% del resto del tráfico sano
+      - name: baseline-sampling
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 5
+
+      # Policy 5: rate limit como red de seguridad
+      - name: rate-limit
+        type: rate_limiting
+        rate_limiting:
+          spans_per_second: 500
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [tail_sampling, batch]   # sampling ANTES del batch
+      exporters: [otlp/tempo, debug]
