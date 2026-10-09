@@ -61,5 +61,19 @@ services:
       - ./blackbox.yml:/etc/blackbox_exporter/config.yml
     restart: unless-stopped
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    ports:
+      - "9093:9093"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    restart: unless-stopped
+
 volumes:
   grafana-data:

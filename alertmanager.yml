@@ -1,0 +1,62 @@
+route:
+  receiver: "default-webhook"
+  group_by: ["alertname", "job"]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 4h
+  routes:
+    # Critical alerts go to PagerDuty-style receiver
+    - match:
+        severity: critical
+      receiver: "critical-webhook"
+      group_wait: 5s
+      repeat_interval: 1h
+      continue: false
+
+    # Warning alerts go to Slack-style receiver
+    - match:
+        severity: warning
+      receiver: "warning-webhook"
+      repeat_interval: 4h
+      continue: false
+
+    # Platform team alerts route separately
+    - match:
+        team: platform
+      receiver: "platform-webhook"
+      continue: false
+
+inhibit_rules:
+  # If HighErrorRate is firing, suppress ElevatedErrorRate
+  - source_match:
+      alertname: HighErrorRate
+    target_match:
+      alertname: ElevatedErrorRate
+    equal: ["job"]
+
+  # If EndpointDown is firing, suppress latency alerts for that endpoint
+  - source_match:
+      alertname: EndpointDown
+    target_match_re:
+      alertname: ".*Latency.*"
+    equal: ["instance"]
+
+receivers:
+  - name: "default-webhook"
+    webhook_configs:
+      - url: "http://host.docker.internal:4000/webhook"
+
+  - name: "critical-webhook"
+    webhook_configs:
+      - url: "http://host.docker.internal:4000/webhook"
+        send_resolved: true
+
+  - name: "warning-webhook"
+    webhook_configs:
+      - url: "http://host.docker.internal:4000/webhook"
+        send_resolved: true
+
+  - name: "platform-webhook"
+    webhook_configs:
+      - url: "http://host.docker.internal:4000/webhook"
+        send_resolved: true
