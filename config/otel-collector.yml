@@ -39,6 +39,24 @@ processors:
         value: demo-app
         action: upsert
 
+  # Lección 403 — tail sampling: decide qué traces guardar DESPUÉS de que completan
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 100000
+    policies:
+      - name: errors-policy
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      - name: latency-policy
+        type: latency
+        latency:
+          threshold_ms: 2000
+      - name: probabilistic-policy
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10
+
   # Solo trazas: limpiar datos sensibles antes de mandarlos a Tempo
   attributes/scrub:
     actions:
@@ -85,7 +103,7 @@ service:
       exporters: [prometheus, debug]
     traces:
       receivers: [otlp]
-      processors: [resource, attributes/scrub, batch]
+      processors: [resource, attributes/scrub, tail_sampling, batch]
       exporters: [otlp/tempo, debug]
     logs:
       receivers: [filelog]

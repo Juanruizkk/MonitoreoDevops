@@ -14,5 +14,11 @@ datasources:
           matcherRegex: '"trace_id":"(\\w+)"'
           name: TraceID
           url: '$${__value.raw}'
+          urlDisplayLabel: 'View Trace'
+        - datasourceUid: tempo
+          matcherRegex: 'trace_id=(\\w+)'
+          name: TraceID
+          url: '$${__value.raw}'
+          urlDisplayLabel: 'View Trace'
     version: 1
     editable: true

@@ -1,7 +1,8 @@
 const express = require('express');
 const { metrics, trace, SpanStatusCode } = require('@opentelemetry/api');
+const pino = require('pino');
+const path = require('path');
 
-// Lección 303 — Step 7: tracer para spans y atributos custom
 const tracer = trace.getTracer('demo-app', '1.0.0');
 
 const app = express();
@@ -9,25 +10,42 @@ const PORT = 4000;
 
 app.use(express.json());
 
+// === STRUCTURED LOGGING ===
+const logger = pino(
+  {
+    level: 'info',
+    timestamp: pino.stdTimeFunctions.isoTime,
+    formatters: {
+      level(label) { return { level: label }; },
+    },
+    base: { service: 'demo-app' },
+  },
+  pino.destination(path.join(__dirname, 'logs', 'app.log'))
+);
+
+// Helper: log con trace_id del span activo inyectado automáticamente
+function getTraceContext() {
+  const span = trace.getActiveSpan();
+  if (!span) return {};
+  const ctx = span.spanContext();
+  return { trace_id: ctx.traceId, span_id: ctx.spanId };
+}
+
 // === CUSTOM METRICS ===
 const meter = metrics.getMeter('demo-app', '1.0.0');
 
-// COUNTER: Total HTTP requests
 const requestCounter = meter.createCounter('app_http_requests_total', {
   description: 'Total HTTP requests by method, endpoint, and status code',
 });
 
-// COUNTER: Business events
 const ordersCounter = meter.createCounter('app_orders_processed_total', {
   description: 'Total orders processed by product category',
 });
 
-// GAUGE: Active connections (goes up and down)
 const activeConnections = meter.createUpDownCounter('app_active_connections', {
   description: 'Number of currently active connections',
 });
 
-// HISTOGRAM: Custom request duration (in seconds)
 const requestDuration = meter.createHistogram('app_http_request_duration_seconds', {
   description: 'HTTP request duration in seconds',
   unit: 's',
@@ -36,7 +54,7 @@ const requestDuration = meter.createHistogram('app_http_request_duration_seconds
   },
 });
 
-// === MIDDLEWARE: track active connections and duration ===
+// === MIDDLEWARE ===
 app.use((req, res, next) => {
   activeConnections.add(1);
   const start = Date.now();
@@ -48,6 +66,10 @@ app.use((req, res, next) => {
       endpoint: req.route ? req.route.path : req.path,
       status_code: String(res.statusCode),
     });
+    logger.info(
+      { ...getTraceContext(), method: req.method, path: req.path, status_code: res.statusCode, duration_ms: Math.round(duration * 1000) },
+      'request completed'
+    );
   });
   next();
 });
@@ -72,11 +94,9 @@ app.get('/order', (req, res) => {
   const category = categories[Math.floor(Math.random() * categories.length)];
   const userId = req.query.user_id || `usr_${Math.floor(Math.random() * 100)}`;
 
-  // Atributos de negocio sobre el span HTTP que crea la auto-instrumentación
   const httpSpan = trace.getActiveSpan();
   httpSpan?.setAttribute('user.id', userId);
 
-  // Span hijo manual: una unidad de trabajo propia con contexto de negocio
   tracer.startActiveSpan('processOrder', (span) => {
     const orderId = `ord_${Date.now()}`;
     const itemCount = Math.floor(Math.random() * 5) + 1;
@@ -84,13 +104,16 @@ app.get('/order', (req, res) => {
     span.setAttribute('order.category', category);
     span.setAttribute('order.item_count', itemCount);
     span.setAttribute('feature.new_checkout', Math.random() < 0.5);
-
-    // Evento: un "log" pegado al span
     span.addEvent('order_created', { 'order.id': orderId, 'payment.method': 'stripe' });
+
+    logger.info(
+      { ...getTraceContext(), order_id: orderId, category, user_id: userId, item_count: itemCount },
+      'order processed'
+    );
 
     ordersCounter.add(1, { product_category: category });
     requestCounter.add(1, { method: 'GET', endpoint: '/order', status_code: '200' });
-    span.end(); // sin esto el span queda huérfano y nunca se exporta
+    span.end();
     res.json({ order: 'placed', order_id: orderId, category, user_id: userId });
   });
 });
@@ -100,24 +123,28 @@ app.get('/slow', (req, res) => {
   trace.getActiveSpan()?.setAttribute('app.simulated_delay_ms', delay);
   setTimeout(() => {
     requestCounter.add(1, { method: 'GET', endpoint: '/slow', status_code: '200' });
+    logger.warn({ ...getTraceContext(), delay_ms: delay }, 'slow response detected');
     res.json({ message: 'slow response', delay_ms: delay });
   }, delay);
 });
 
 app.post('/webhook', (req, res) => {
   requestCounter.add(1, { method: 'POST', endpoint: '/webhook', status_code: '200' });
+  logger.info({ ...getTraceContext() }, 'webhook received');
   res.json({ status: 'received' });
 });
 
 app.get('/error', (req, res) => {
   requestCounter.add(1, { method: 'GET', endpoint: '/error', status_code: '500' });
-  // Registrar la excepción como evento del span y marcarlo en rojo en Tempo
   const span = trace.getActiveSpan();
-  span?.recordException(new Error('Something went wrong'));
-  span?.setStatus({ code: SpanStatusCode.ERROR, message: 'Something went wrong' });
+  const err = new Error('Something went wrong');
+  span?.recordException(err);
+  span?.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+  logger.error({ ...getTraceContext(), error: err.message }, 'request failed');
   res.status(500).json({ error: 'Something went wrong' });
 });
 
 app.listen(PORT, () => {
+  logger.info({ port: PORT }, 'Demo app started');
   console.log(`Demo app listening on http://localhost:${PORT}`);
 });

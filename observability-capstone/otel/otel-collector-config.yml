@@ -1,0 +1,83 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  filelog:
+    include:
+      - /var/log/demo-app/*.log
+    start_at: beginning
+    operators:
+      - type: json_parser
+        parse_from: body
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+      - type: severity_parser
+        parse_from: attributes.level
+        mapping:
+          error: error
+          warn: warn
+          info: info
+          debug: debug
+
+processors:
+  batch:
+    send_batch_size: 1024
+    timeout: 5s
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 256
+    spike_limit_mib: 64
+  attributes:
+    actions:
+      - key: loki.attribute.labels
+        value: service,level
+        action: insert
+
+exporters:
+  # Metrics -> Prometheus (Collector exposes /metrics for Prometheus to scrape)
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Logs -> Loki via HTTP push
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+
+  # Traces -> Tempo via OTLP/gRPC
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Debug output for troubleshooting
+  debug:
+    verbosity: basic
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, debug]
+    logs:
+      receivers: [filelog]
+      processors: [memory_limiter, attributes, batch]
+      exporters: [loki, debug]
+
+  telemetry:
+    logs:
+      level: info
