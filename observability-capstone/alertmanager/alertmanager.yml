@@ -1,0 +1,15 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+  receiver: default
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url: http://demo-app:4000/api/webhook
+        send_resolved: true

@@ -346,3 +346,161 @@ wal:    /var/tempo/wal      ← Write-Ahead Log (datos recientes en memoria)
 blocks: /var/tempo/blocks   ← bloques compactados (datos históricos)
 ```
 Retención: 48 horas. En producción: object storage (S3, GCS).
+
+---
+
+## Step 8 — Alertmanager, Datasources y Docker Compose
+
+### `alertmanager/alertmanager.yml`
+
+```yaml
+global:
+  resolve_timeout: 5m
+```
+Cuando una alerta deja de disparar, Alertmanager espera 5 minutos antes de enviar la notificación de "resuelto". Evita notificaciones de resolución prematuras si la alerta fluctúa.
+
+```yaml
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+  receiver: default
+```
+
+| Campo | Efecto |
+|---|---|
+| `group_by` | Agrupa alertas con el mismo `alertname` y `severity` en una sola notificación |
+| `group_wait` | Espera 10s antes de enviar el primer mensaje del grupo (da tiempo a que lleguen alertas relacionadas) |
+| `group_interval` | Si ya se envió un mensaje y llegan alertas nuevas al grupo, espera 30s antes de enviar el update |
+| `repeat_interval` | Si la alerta sigue activa, reenvía la notificación cada 1 hora |
+
+```yaml
+receivers:
+  - name: default
+    webhook_configs:
+      - url: http://demo-app:4000/api/webhook
+        send_resolved: true
+```
+
+En vez de Slack o PagerDuty (que requieren cuentas externas), las alertas van al endpoint `POST /api/webhook` de la propia demo app. `send_resolved: true` también manda notificación cuando la alerta se resuelve.
+
+---
+
+### `grafana/provisioning/datasources/datasources.yml`
+
+Este archivo configura la correlación entre señales. Es el más importante del Step 8.
+
+**Prometheus → Tempo (métrica → traza via exemplars):**
+```yaml
+exemplarTraceIdDestinations:
+  - name: traceID
+    datasourceUid: tempo
+```
+Cuando Prometheus guarda un valor de métrica con un exemplar (trace_id adjunto), Grafana lo convierte en un link clickeable que abre la traza en Tempo. Requiere `--enable-feature=exemplar-storage` en Prometheus y `send_exemplars: true` en Tempo.
+
+**Loki → Tempo (log → traza via regex):**
+```yaml
+derivedFields:
+  - name: TraceID
+    datasourceUid: tempo
+    matcherRegex: '"trace_id":"(\\w+)"'
+    url: '$${__value.raw}'
+```
+Cuando Grafana muestra una línea de log, aplica el regex al contenido. Si encuentra `trace_id`, lo convierte en un botón que abre la traza en Tempo. Es por esto que `server.js` inyecta `trace_id` en cada línea de log.
+
+**Tempo → todo (traza → métricas, logs, grafo):**
+```yaml
+tracesToMetrics:
+  datasourceUid: prometheus
+tracesToLogs:
+  datasourceUid: loki
+  filterByTraceID: true
+nodeGraph:
+  enabled: true
+serviceMap:
+  datasourceUid: prometheus
+```
+
+Desde una traza en Tempo podés navegar en cuatro direcciones:
+- `tracesToMetrics` → métricas de Prometheus del servicio en ese momento
+- `tracesToLogs` → logs de Loki filtrados por ese `trace_id` exacto
+- `nodeGraph` → visualización de grafo de nodos de la traza
+- `serviceMap` → mapa de dependencias entre servicios (usa span-metrics de Tempo)
+
+**El loop completo de correlación:**
+```
+Métrica en Grafana
+  → click en exemplar → Traza en Tempo
+      → tracesToLogs   → Logs en Loki
+          → TraceID link → Traza en Tempo
+      → tracesToMetrics → Métricas en Prometheus
+```
+
+---
+
+### `docker-compose.yml`
+
+**Red compartida:**
+```yaml
+networks:
+  observability:
+    driver: bridge
+```
+Todos los servicios comparten la red `observability`. Los nombres de servicio funcionan como hostnames DNS (`otel-collector`, `prometheus`, `loki`, `tempo`). Por eso los configs usan `http://loki:3100` en vez de IPs.
+
+**Orden de arranque con health checks:**
+```
+loki (healthy) ┐
+               ├─→ otel-collector (started) → demo-app
+tempo (healthy)┘
+
+prometheus (healthy) → grafana
+```
+`service_healthy` espera que el health check pase antes de arrancar el dependiente. `service_started` solo espera que el proceso arranque (sin garantía de que esté listo).
+
+**Flags de simulación de incidentes:**
+```yaml
+- SIMULATE_DB_LATENCY=${SIMULATE_DB_LATENCY:-false}
+- SIMULATE_MEMORY_LEAK=${SIMULATE_MEMORY_LEAK:-false}
+```
+Sintaxis `${VAR:-default}` — si no se define la variable en el host, usa `false`. Para activar un incidente:
+```bash
+SIMULATE_DB_LATENCY=true docker compose up
+```
+
+**Volumen compartido entre app y Collector:**
+```yaml
+demo-app:
+  volumes:
+    - app-logs:/var/log/demo-app       # escribe logs
+
+otel-collector:
+  volumes:
+    - app-logs:/var/log/demo-app:ro    # lee logs (read-only)
+```
+La demo app escribe, el Collector lee. El `:ro` es una buena práctica de seguridad — el Collector no puede modificar ni borrar los logs accidentalmente.
+
+**Flags críticos de Prometheus:**
+```yaml
+- --web.enable-remote-write-receiver   # acepta remote_write de Tempo (span-metrics)
+- --enable-feature=exemplar-storage    # guarda exemplars (trace_ids junto a métricas)
+```
+Sin estos dos flags, los span-metrics de Tempo no llegan a Prometheus y los exemplars se descartan — rompe la correlación métrica→traza.
+
+**Grafana:**
+```yaml
+- GF_AUTH_ANONYMOUS_ENABLED=true     # acceso sin login en modo viewer
+- GF_FEATURE_TOGGLES_ENABLE=traceqlEditor  # habilita editor de TraceQL
+```
+
+**Volúmenes nombrados — por qué importan:**
+```yaml
+volumes:
+  app-logs:          # puente de logs entre demo-app y otel-collector
+  prometheus-data:   # datos TSDB de Prometheus (sobrevive reinicios)
+  grafana-data:      # configuración y dashboards creados en UI
+  loki-data:         # chunks e índice de Loki
+  tempo-data:        # WAL y bloques de Tempo
+```
+Sin volúmenes nombrados, `docker compose down` borra todos los datos. Con volúmenes se pierden solo con `docker compose down -v`.

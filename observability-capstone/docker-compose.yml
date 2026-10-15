@@ -1,0 +1,156 @@
+services:
+  # === Demo Application ===
+  demo-app:
+    build: ./app
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - SIMULATE_DB_LATENCY=${SIMULATE_DB_LATENCY:-false}
+      - SIMULATE_MEMORY_LEAK=${SIMULATE_MEMORY_LEAK:-false}
+    volumes:
+      - app-logs:/var/log/demo-app
+    depends_on:
+      otel-collector:
+        condition: service_started
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # === OpenTelemetry Collector ===
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.97.0
+    command: ["--config", "/etc/otel/config.yml"]
+    volumes:
+      - ./otel/otel-collector-config.yml:/etc/otel/config.yml:ro
+      - app-logs:/var/log/demo-app:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+      - "13133:13133"
+    depends_on:
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # === Prometheus ===
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # === Grafana ===
+  grafana:
+    image: grafana/grafana:10.4.0
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # === Loki ===
+  loki:
+    image: grafana/loki:3.0.0
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # === Tempo ===
+  tempo:
+    image: grafana/tempo:2.4.1
+    command: -config.file=/etc/tempo/config.yml
+    volumes:
+      - ./tempo/tempo-config.yml:/etc/tempo/config.yml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "14268:14268"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # === Alertmanager ===
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9093/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - observability
+    restart: unless-stopped
+
+volumes:
+  app-logs:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  tempo-data:
+
+networks:
+  observability:
+    driver: bridge
